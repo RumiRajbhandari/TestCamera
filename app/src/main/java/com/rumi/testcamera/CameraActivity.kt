@@ -6,24 +6,32 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
+import android.view.MotionEvent
 import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import kotlinx.android.synthetic.main.activity_camera.*
 import java.io.File
+import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+
+typealias LumaListener = (luma: Double) -> Unit
 
 class CameraActivity : AppCompatActivity() {
     private var imageCapture: ImageCapture? = null
@@ -32,6 +40,7 @@ class CameraActivity : AppCompatActivity() {
     var photoFile: File? = null
     private var lensFacing: Int = CameraSelector.LENS_FACING_BACK
     private var cameraProvider: ProcessCameraProvider? = null
+    private var capturedLuminosity = 0.0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -123,6 +132,10 @@ class CameraActivity : AppCompatActivity() {
                     container_captured.visibility = View.VISIBLE
                     group.visibility = View.GONE
                     loadImage(img_captured, photoFile?.path ?: "")
+                    if (capturedLuminosity < 50.0) {
+                        Toast.makeText(this@CameraActivity, "Image is too dark", Toast.LENGTH_SHORT).show()
+                    }
+                    tvLuminosity.text = "Luminosity is $capturedLuminosity"
                 }
             })
     }
@@ -162,14 +175,24 @@ class CameraActivity : AppCompatActivity() {
         // Select back camera as a default
         val cameraSelector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
 
+        val imageAnalyzer = ImageAnalysis.Builder()
+            .build()
+            .also {
+                it.setAnalyzer(cameraExecutor, LuminosityAnalyzer { luma ->
+                    Log.d(TAG, "Average luminosity: $luma")
+                    capturedLuminosity = luma
+                })
+            }
+
         try {
             // Unbind use cases before rebinding
             cameraProvider.unbindAll()
 
             // Bind use cases to camera
-            cameraProvider.bindToLifecycle(
-                this, cameraSelector, preview, imageCapture
+            val camera = cameraProvider.bindToLifecycle(
+                this, cameraSelector, preview, imageCapture, imageAnalyzer
             )
+            addFocusListener(camera.cameraControl)
         } catch (exc: Exception) {
             Log.e(TAG, "Use case binding failed", exc)
         }
@@ -219,6 +242,55 @@ class CameraActivity : AppCompatActivity() {
 
     private fun hasFrontCamera(): Boolean {
         return cameraProvider?.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) ?: false
+    }
+
+    private fun addFocusListener(cameraControl: CameraControl) {
+        viewFinder.setOnTouchListener(object : View.OnTouchListener {
+            override fun onTouch(v: View?, event: MotionEvent?): Boolean {
+                when (event?.action) {
+                    MotionEvent.ACTION_DOWN -> return true
+                    MotionEvent.ACTION_UP -> {
+                        // Get the MeteringPointFactory from PreviewView
+                        val factory = viewFinder.meteringPointFactory
+
+                        // Create a MeteringPoint from the tap coordinates
+                        val point = factory.createPoint(event.x, event.y)
+
+                        // Create a MeteringAction from the MeteringPoint, you can configure it to specify the metering mode
+                        val action = FocusMeteringAction.Builder(point).build()
+
+                        // Trigger the focus and metering. The method returns a ListenableFuture since the operation
+                        // is asynchronous. You can use it get notified when the focus is successful or if it fails.
+                        cameraControl.startFocusAndMetering(action)
+
+                        return true
+                    }
+                    else -> return false
+                }
+            }
+        })
+    }
+
+    private class LuminosityAnalyzer(private val listener: LumaListener) : ImageAnalysis.Analyzer {
+
+        private fun ByteBuffer.toByteArray(): ByteArray {
+            rewind()    // Rewind the buffer to zero
+            val data = ByteArray(remaining())
+            get(data)   // Copy the buffer into a byte array
+            return data // Return the byte array
+        }
+
+        override fun analyze(image: ImageProxy) {
+
+            val buffer = image.planes[0].buffer
+            val data = buffer.toByteArray()
+            val pixels = data.map { it.toInt() and 0xFF }
+            val luma = pixels.average()
+
+            listener(luma)
+
+            image.close()
+        }
     }
 
     companion object {
