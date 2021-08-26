@@ -30,7 +30,6 @@ import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import kotlin.experimental.and
 
 typealias LumaListener = (luma: Double) -> Unit
 
@@ -41,6 +40,7 @@ class CameraActivity : AppCompatActivity() {
     var photoFile: File? = null
     private var lensFacing: Int = CameraSelector.LENS_FACING_BACK
     private var cameraProvider: ProcessCameraProvider? = null
+    private var capturedLuminosity = 0.0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -132,6 +132,10 @@ class CameraActivity : AppCompatActivity() {
                     container_captured.visibility = View.VISIBLE
                     group.visibility = View.GONE
                     loadImage(img_captured, photoFile?.path ?: "")
+                    if (capturedLuminosity < 50.0) {
+                        Toast.makeText(this@CameraActivity, "Image is too dark", Toast.LENGTH_SHORT).show()
+                    }
+                    tvLuminosity.text = "Luminosity is $capturedLuminosity"
                 }
             })
     }
@@ -176,7 +180,7 @@ class CameraActivity : AppCompatActivity() {
             .also {
                 it.setAnalyzer(cameraExecutor, LuminosityAnalyzer { luma ->
                     Log.d(TAG, "Average luminosity: $luma")
-//                    tvLuminosity.text = luma.toString()
+                    capturedLuminosity = luma
                 })
             }
 
@@ -265,21 +269,6 @@ class CameraActivity : AppCompatActivity() {
                 }
             }
         })
-    }
-
-    private val mAnalyzer = ImageAnalysis.Analyzer { image: ImageProxy ->
-        val bytes = ByteArray(image.planes[0].buffer.remaining())
-        image.planes[0].buffer[bytes]
-        var total = 0
-        for (value in bytes) {
-            total += value and 0xFF.toByte()
-        }
-        if (bytes.isNotEmpty()) {
-            val luminance = total / bytes.size
-            println("luminance is $luminance")
-            // luminance is the value you need.
-        }
-        image.close()
     }
 
     private class LuminosityAnalyzer(private val listener: LumaListener) : ImageAnalysis.Analyzer {
